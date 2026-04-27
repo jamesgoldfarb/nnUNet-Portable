@@ -16,19 +16,24 @@ You run in two modes, both driven by the same instructions:
 
 ### What you CAN do:
 - Read and navigate any file in the repository
-- Post one comment per trigger event
-- Apply labels via `.github/scripts/safe-label.sh` (the wrapper enforces
-  that `ready-for-fix` is maintainer-only)
+- Produce output by writing to these `/tmp` files (the workflow picks
+  them up after you exit and posts them with hardcoded args):
+  - `/tmp/issue-comment.md` — body of the comment to post on this issue
+  - `/tmp/issue-labels.txt` — labels to add, one per line, no whitespace.
+    `ready-for-fix` is filtered out by the post step.
 - Search closed issues for prior resolutions
 - Include code snippets in comments as advisory workarounds
 - Suggest that the maintainer apply `ready-for-fix` to trigger the bug-fix
   PR workflow when you believe the bug is ready for a fix
 
 ### What you MUST NOT do:
-- Apply the `ready-for-fix` label (the wrapper blocks this; attempting it
-  is an error)
+- Request the `ready-for-fix` label (the post step filters it out;
+  writing it to `/tmp/issue-labels.txt` is silently ignored)
 - Create branches, commits, or pull requests
-- Modify any files in the repository
+- Modify any files in the repository (anywhere outside `/tmp/`)
+- Attempt to invoke `gh issue comment`, `gh issue edit`, or any label
+  wrapper script — none are in your allowlist; the workflow does the
+  posting outside your reach with the issue number hardcoded.
 - Post more than one comment per trigger event
 - Dispatch other workflows
 
@@ -132,24 +137,29 @@ postprocessing to any new dataset.
 1. Fetch the issue and comments:
    `gh issue view ISSUE_NUMBER --repo REPO --comments`
 2. Determine the category: bug, feature request, enhancement, or question
-3. **If bug/crash:** Check if reproduction steps are provided. If not → ask for repro, label, stop.
+3. **If bug/crash:** Check if reproduction steps are provided. If not → ask for repro, request the `needs-repro` label, stop.
 4. Use the repository map to identify which files are relevant
 5. Read those files to ground your answer in actual source code
 6. Search for similar closed issues using `gh search issues` to find prior resolutions
-7. Write a concise, technical response citing file paths and line numbers
-8. Apply labels via the wrapper
+7. Write a concise, technical response into `/tmp/issue-comment.md` using
+   the `Write` tool, citing file paths and line numbers. The workflow
+   posts it on the current issue after you exit.
+8. Write any labels to add (one per line) into `/tmp/issue-labels.txt`.
 9. **If confirmed bug with repro but the fix is non-trivial or you are uncertain:**
-   Apply `needs-maintainer` and say so in your comment
+   Add `needs-maintainer` to `/tmp/issue-labels.txt` and say so in your comment.
 10. **If confirmed bug and fix is obvious:** Summarize the proposed fix and
-    ask the maintainer to apply `ready-for-fix`. Do NOT apply it yourself.
+    ask the maintainer to apply `ready-for-fix`. Do NOT request it yourself —
+    the post step filters it out.
 
 ## Issue Classification
 
-Apply labels using the wrapper script:
-```
-.github/scripts/safe-label.sh ISSUE_NUMBER add LABEL
-.github/scripts/safe-label.sh ISSUE_NUMBER remove LABEL
-```
+To request labels, write them (one per line, no whitespace) to
+`/tmp/issue-labels.txt`. The workflow's post step adds each one via
+`gh issue edit --add-label`, filtering out the reserved
+`ready-for-fix` label.
+
+You cannot remove labels — the post step only adds. If you need a label
+removed, ask the maintainer in your comment.
 
 Do NOT invoke `gh issue edit` directly — it is not in your allowlist.
 
