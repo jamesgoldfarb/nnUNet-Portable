@@ -768,7 +768,7 @@ class nnUNetPredictor(object):
         if output_filename_truncated is None:
             output_filename_truncated = [None] * len(list_of_lists_or_source_folder)
         if seg_from_prev_stage_files is None:
-            seg_from_prev_stage_files = [None] * len(seg_from_prev_stage_files)
+            seg_from_prev_stage_files = [None] * len(list_of_lists_or_source_folder)
 
         ret = []
         for li, of, sps in zip(list_of_lists_or_source_folder, output_filename_truncated, seg_from_prev_stage_files):
