@@ -28,6 +28,21 @@ By default, inference uses the 5 trained folds as an ensemble. If you trained th
 nnUNetv2_predict -i INPUT_FOLDER -o OUTPUT_FOLDER -d DATASET_NAME_OR_ID -c CONFIGURATION -f all
 ```
 
+To use a fixed-shape ONNX export for the patch-level network forward pass while keeping nnU-Net image loading,
+preprocessing, sliding-window inference, resampling, postprocessing, and export:
+
+```bash
+nnUNetv2_predict \
+  -i imagesTs \
+  -o output_onnx \
+  -d DatasetXXX \
+  -c 3d_fullres \
+  -f all \
+  --backend onnxruntime \
+  --onnx_model model.onnx \
+  --ort_provider CPUExecutionProvider
+```
+
 ## Ensemble multiple configuration outputs
 
 ```bash

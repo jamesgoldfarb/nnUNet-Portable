@@ -27,6 +27,7 @@ from nnunetv2.inference.export_prediction import export_prediction_from_logits, 
     convert_predicted_logits_to_segmentation_with_correct_shape
 from nnunetv2.inference.sliding_window_prediction import compute_gaussian, \
     compute_steps_for_sliding_window
+from nnunetv2.inference.torch_inference_backend import OnnxRuntimeInferenceBackend, TorchInferenceBackend
 from nnunetv2.utilities.file_path_utilities import get_output_folder, check_workers_alive_and_busy
 from nnunetv2.utilities.find_objects import recursive_find_trainer_class_by_name
 from nnunetv2.utilities.helpers import empty_cache, dummy_context
@@ -64,6 +65,7 @@ class nnUNetPredictor(object):
             perform_everything_on_device = False
         self.device = device
         self.perform_everything_on_device = perform_everything_on_device
+        self.inference_backend = TorchInferenceBackend()
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
@@ -573,7 +575,7 @@ class nnUNetPredictor(object):
     @torch.inference_mode()
     def _internal_maybe_mirror_and_predict(self, x: torch.Tensor) -> torch.Tensor:
         mirror_axes = self.allowed_mirroring_axes if self.use_mirroring else None
-        prediction = self.network(x)
+        prediction = self.inference_backend(self.network, x)
 
         if mirror_axes is not None:
             # check for invalid numbers in mirror_axes
@@ -585,7 +587,7 @@ class nnUNetPredictor(object):
                 c for i in range(len(mirror_axes)) for c in itertools.combinations(mirror_axes, i + 1)
             ]
             for axes in axes_combinations:
-                prediction += torch.flip(self.network(torch.flip(x, axes)), axes)
+                prediction += torch.flip(self.inference_backend(self.network, torch.flip(x, axes)), axes)
             prediction /= (len(axes_combinations) + 1)
         return prediction
 
@@ -860,7 +862,6 @@ def predict_entry_point_modelfolder():
     parser.add_argument('--not_on_device', action='store_true', required=False, default=False,
                         help="Set this flag to disable perform_everything_on_device. Recommended for large cases that "
                              "occupy more VRAM than available")
-
     print(
         "\n#######################################################################\nPlease cite the following paper "
         "when using nnU-Net:\n"
@@ -972,6 +973,13 @@ def predict_entry_point():
     parser.add_argument('--not_on_device', action='store_true', required=False, default=False,
                         help="Set this flag to disable perform_everything_on_device. Recommended for large cases that "
                              "occupy more VRAM than available")
+    parser.add_argument('--backend', choices=['torch', 'onnxruntime'], default='torch', required=False,
+                        help='Inference backend for the patch-level network forward pass. Default: torch')
+    parser.add_argument('--onnx_model', type=str, required=False, default=None,
+                        help='Path to a fixed-shape ONNX model. Required when --backend onnxruntime is used.')
+    parser.add_argument('--ort_provider', type=str, required=False, default='CPUExecutionProvider',
+                        help='ONNX Runtime execution provider for --backend onnxruntime. '
+                             'Default: CPUExecutionProvider')
 
     print(
         "\n#######################################################################\nPlease cite the following paper "
@@ -982,6 +990,8 @@ def predict_entry_point():
 
     args = parser.parse_args()
     args.f = [i if i == 'all' else int(i) for i in args.f]
+    if args.backend == 'onnxruntime' and args.onnx_model is None:
+        parser.error('--onnx_model is required when --backend onnxruntime is used')
 
     model_folder = get_output_folder(args.d, args.tr, args.p, args.c)
 
@@ -1019,6 +1029,11 @@ def predict_entry_point():
         args.f,
         checkpoint_name=args.chk
     )
+    if args.backend == 'onnxruntime':
+        try:
+            predictor.inference_backend = OnnxRuntimeInferenceBackend(args.onnx_model, provider=args.ort_provider)
+        except (FileNotFoundError, RuntimeError) as e:
+            parser.error(str(e))
 
     run_sequential = args.nps == 0 and args.npp == 0
 

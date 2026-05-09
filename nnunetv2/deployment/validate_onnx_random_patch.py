@@ -1,0 +1,83 @@
+import argparse
+import sys
+from pathlib import Path
+
+from nnunetv2.deployment.onnx_common import load_fold_all_predictor, report_comparison, validate_provider
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare nnUNetv2 fold_all PyTorch logits against ONNX Runtime logits on a deterministic patch."
+    )
+    parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold_all.")
+    parser.add_argument("--onnx_model", required=True, help="Fixed-shape ONNX model exported from the same nnUNet model.")
+    parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
+    parser.add_argument("--provider", default="CPUExecutionProvider", help="ONNX Runtime provider. Default: CPUExecutionProvider")
+    parser.add_argument("--seed", type=int, default=12345, help="Random seed for deterministic input. Default: 12345")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+    model_dir = Path(args.model_dir).expanduser().resolve()
+    onnx_model = Path(args.onnx_model).expanduser().resolve()
+    checkpoint_path = model_dir / "fold_all" / args.checkpoint
+
+    if not checkpoint_path.is_file():
+        print(f"Error: required checkpoint not found: {checkpoint_path}", file=sys.stderr)
+        print(f"Expected fold_all/{args.checkpoint} for this validation scope.", file=sys.stderr)
+        return 2
+    if not onnx_model.is_file():
+        print(f"Error: ONNX model not found: {onnx_model}", file=sys.stderr)
+        return 2
+
+    try:
+        import numpy as np
+        import onnxruntime as ort
+        import torch
+        from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+        from nnunetv2.utilities.label_handling.label_handling import determine_num_input_channels
+    except Exception as exc:
+        print("Error: failed to import required validation dependencies.", file=sys.stderr)
+        print("Install nnUNetv2, torch, onnxruntime, and nnU-Net runtime dependencies before validating.", file=sys.stderr)
+        print(f"Full exception: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        available_providers = validate_provider(ort, args.provider)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        predictor, patch_size, num_input_channels = load_fold_all_predictor(
+            model_dir,
+            args.checkpoint,
+            torch,
+            nnUNetPredictor,
+            determine_num_input_channels,
+        )
+        input_shape = (1, num_input_channels, *patch_size)
+        rng = np.random.default_rng(args.seed)
+        input_array = rng.standard_normal(input_shape).astype(np.float32)
+
+        network = predictor.network.to(torch.device("cpu"))
+        network.eval()
+        with torch.no_grad():
+            torch_output = network(torch.from_numpy(input_array)).detach().cpu().numpy()
+
+        session = ort.InferenceSession(str(onnx_model), providers=[args.provider])
+        input_name = session.get_inputs()[0].name
+        output_name = session.get_outputs()[0].name
+        onnx_output = session.run([output_name], {input_name: input_array})[0]
+
+        return report_comparison(input_shape, torch_output, onnx_output, args.provider, available_providers)
+
+    except Exception as exc:
+        print("Validation failed.", file=sys.stderr)
+        print(f"Full exception: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
