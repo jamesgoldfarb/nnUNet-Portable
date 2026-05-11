@@ -41,6 +41,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--configuration", default=SUPPORTED_CONFIGURATION, help="Expected nnU-Net configuration. Default: 3d_fullres")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version. Default: 17")
     parser.add_argument("--device", default="cpu", help="Torch device for export. Default: cpu")
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Export network weights and dummy input as float16. Requires --device cuda. Default: fp32",
+    )
     return parser.parse_args()
 
 
@@ -51,6 +56,13 @@ def _validate_device(device_arg: str, torch_module: Any) -> Any:
     return device
 
 
+def _validate_precision(fp16: bool, device: Any) -> None:
+    if fp16 and device.type != "cuda":
+        raise RuntimeError(
+            "--fp16 export requires --device cuda. PyTorch CPU float16 convolution export is not supported reliably."
+        )
+
+
 def _write_export_metadata(
     output_onnx: Path,
     model_dir: Path,
@@ -59,6 +71,9 @@ def _write_export_metadata(
     patch_size: tuple[int, ...],
     num_input_channels: int,
     opset: int,
+    precision: str,
+    input_dtype: str,
+    output_dtype: str,
     torch_module: Any,
     onnx_module: Any,
 ) -> None:
@@ -71,6 +86,9 @@ def _write_export_metadata(
         "patch_size_order": "nnU-Net network tensor spatial order, matching input tensor shape [N, C, *patch_size]",
         "input_shape": [1, num_input_channels, *patch_size],
         "num_input_channels": num_input_channels,
+        "precision": precision,
+        "input_dtype": input_dtype,
+        "output_dtype": output_dtype,
         "input_name": INPUT_NAME,
         "output_name": OUTPUT_NAME,
         "opset": opset,
@@ -126,6 +144,9 @@ def main() -> int:
 
     try:
         device = _validate_device(args.device, torch)
+        _validate_precision(args.fp16, device)
+        export_dtype = torch.float16 if args.fp16 else torch.float32
+        precision = "fp16" if args.fp16 else "fp32"
         predictor, patch_size, num_input_channels = load_fold_all_predictor(
             model_dir,
             args.checkpoint,
@@ -137,14 +158,18 @@ def main() -> int:
         input_shape = (1, num_input_channels, *patch_size)
         print(f"nnU-Net patch size used for export: {patch_size}")
         print(f"ONNX input shape used for export: {input_shape}")
+        print(f"ONNX export precision: {precision}")
 
         network = predictor.network.to(device)
+        if args.fp16:
+            network = network.half()
         network.eval()
-        dummy_input = torch.zeros(input_shape, dtype=torch.float32, device=device)
+        dummy_input = torch.zeros(input_shape, dtype=export_dtype, device=device)
 
         with torch.no_grad():
             torch_output = network(dummy_input)
         print(f"PyTorch output shape: {tuple(torch_output.shape)}")
+        print(f"PyTorch output dtype: {torch_output.dtype}")
 
         output_onnx.parent.mkdir(parents=True, exist_ok=True)
         print(f"Exporting ONNX: {output_onnx}")
@@ -176,6 +201,9 @@ def main() -> int:
             patch_size,
             num_input_channels,
             args.opset,
+            precision,
+            str(dummy_input.dtype).replace("torch.", ""),
+            str(torch_output.dtype).replace("torch.", ""),
             torch,
             onnx,
         )

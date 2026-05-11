@@ -41,6 +41,20 @@ nnUNetv2_export_onnx \
 
 The export writes raw logits only. It also writes `model_export.json` next to `model.onnx` when the export succeeds.
 
+To export an fp16 ONNX model, use CUDA for the export pass:
+
+```bash
+nnUNetv2_export_onnx \
+  --model_dir /path/to/nnUNet_results/DatasetXXX/nnUNetTrainer__nnUNetPlans__3d_fullres \
+  --output_onnx /path/to/export/model_fp16.onnx \
+  --checkpoint checkpoint_final.pth \
+  --opset 17 \
+  --device cuda \
+  --fp16
+```
+
+The fp16 option converts the exported network forward pass and dummy input to float16. Validate fp16 output separately for each model and ONNX Runtime provider.
+
 ## 5. Validating Random Patch Equivalence
 
 Compare PyTorch and ONNX Runtime on the same deterministic random input patch:
@@ -80,6 +94,7 @@ nnUNetv2_predict \
   -i imagesTs \
   -o output_onnx \
   -d DatasetXXX \
+  -tr nnUNetTrainer_250epochs \
   -c 3d_fullres \
   -f all \
   --backend onnxruntime \
@@ -88,6 +103,8 @@ nnUNetv2_predict \
 ```
 
 Omitting `--backend onnxruntime` keeps the default PyTorch backend.
+
+Use the same dataset, trainer (`-tr`), plans (`-p`), configuration (`-c`), fold, and checkpoint that were used for ONNX export. For example, if the ONNX model was exported from `nnUNetTrainer_250epochs__nnUNetPlans__3d_fullres`, pass `-tr nnUNetTrainer_250epochs` to `nnUNetv2_predict`. Otherwise `nnUNetv2_predict` may load a different model folder with a different patch size.
 
 ## 8. Comparing PyTorch vs ONNX Runtime Outputs
 
@@ -160,7 +177,7 @@ If ONNX Runtime reports that a provider is unavailable, list providers with the 
 
 The MVP export uses fixed patch size and no dynamic axes. Confirm that the ONNX model was exported from the same nnU-Net configuration, fold, checkpoint, patch size, and input channel count that prediction uses.
 
-The ONNX model input shape must exactly match the patch tensor shape that `nnUNetv2_predict` sends to the network. Do not rely on spatial-axis transposes to compensate for a mismatch; anisotropic kernels or strides can make that a different computation. Re-export the ONNX model with the exact patch shape used by nnU-Net prediction.
+The ONNX model input shape must exactly match the patch tensor shape that `nnUNetv2_predict` sends to the network. Do not rely on spatial-axis transposes to compensate for a mismatch; anisotropic kernels or strides can make that a different computation. First confirm that prediction is loading the same trainer/plans/configuration/fold as export, then re-export the ONNX model if needed.
 
 ### ONNX Export Failure
 
@@ -169,6 +186,8 @@ Check the printed network class, input shape, opset, package versions, and full 
 ### Output Differs From PyTorch
 
 Run validation in this order: random patch, real preprocessed patch, full-case comparison, then visual review. Differences can come from provider kernels, dtype conversions, export limitations, mismatched model metadata, or an ONNX model exported from different weights.
+
+If using `--fp16`, expect larger numerical differences than fp32 and define acceptance criteria before relying on the outputs.
 
 ### Missing `nnunetv2` Dependency
 

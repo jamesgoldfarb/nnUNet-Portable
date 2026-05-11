@@ -1031,7 +1031,14 @@ def predict_entry_point():
     )
     if args.backend == 'onnxruntime':
         try:
-            predictor.inference_backend = OnnxRuntimeInferenceBackend(args.onnx_model, provider=args.ort_provider)
+            inference_backend = OnnxRuntimeInferenceBackend(args.onnx_model, provider=args.ort_provider)
+            expected_input_shape = (
+                1,
+                determine_num_input_channels(predictor.plans_manager, predictor.configuration_manager, predictor.dataset_json),
+                *predictor.configuration_manager.patch_size
+            )
+            inference_backend.validate_expected_input_shape(expected_input_shape)
+            predictor.inference_backend = inference_backend
         except (FileNotFoundError, RuntimeError) as e:
             parser.error(str(e))
 

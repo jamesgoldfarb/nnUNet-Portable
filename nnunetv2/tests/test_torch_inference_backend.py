@@ -1,15 +1,17 @@
 import sys
 import types
 
+import numpy as np
 import torch
 
 from nnunetv2.inference.torch_inference_backend import OnnxRuntimeInferenceBackend, TorchInferenceBackend
 
 
 class _FakeSessionInput:
-    def __init__(self, name, shape):
+    def __init__(self, name, shape, input_type="tensor(float)"):
         self.name = name
         self.shape = shape
+        self.type = input_type
 
 
 class _ToyNetwork(torch.nn.Module):
@@ -62,6 +64,38 @@ def test_onnx_runtime_inference_backend_returns_tensor_like_prediction(monkeypat
     assert wrapped.shape == x.shape
     assert wrapped.device == x.device
     torch.testing.assert_close(wrapped, x + 1)
+
+
+def test_onnx_runtime_inference_backend_casts_input_for_fp16_model(monkeypatch, tmp_path):
+    model_path = tmp_path / "model.onnx"
+    model_path.write_bytes(b"fake")
+
+    class _FakeSession:
+        def __init__(self, path, providers):
+            self.path = path
+            self.providers = providers
+
+        def run(self, output_names, inputs):
+            assert inputs["input"].dtype == np.float16
+            return [inputs["input"] + np.float16(1)]
+
+        def get_inputs(self):
+            return [_FakeSessionInput("input", [1, 2, 4, 5, 6], "tensor(float16)")]
+
+    fake_ort = types.SimpleNamespace(
+        get_available_providers=lambda: ["CPUExecutionProvider"],
+        InferenceSession=_FakeSession,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+
+    x = torch.randn((1, 2, 4, 5, 6), dtype=torch.float32)
+    backend = OnnxRuntimeInferenceBackend(str(model_path))
+    wrapped = backend(None, x)
+
+    assert backend.expected_input_dtype == np.float16
+    assert wrapped.dtype == x.dtype
+    assert wrapped.shape == x.shape
+    assert wrapped.device == x.device
 
 
 def test_onnx_runtime_inference_backend_rejects_input_shape_mismatch(monkeypatch, tmp_path):
