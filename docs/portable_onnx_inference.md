@@ -106,6 +106,8 @@ Omitting `--backend onnxruntime` keeps the default PyTorch backend.
 
 Use the same dataset, trainer (`-tr`), plans (`-p`), configuration (`-c`), fold, and checkpoint that were used for ONNX export. For example, if the ONNX model was exported from `nnUNetTrainer_250epochs__nnUNetPlans__3d_fullres`, pass `-tr nnUNetTrainer_250epochs` to `nnUNetv2_predict`. Otherwise `nnUNetv2_predict` may load a different model folder with a different patch size.
 
+`--ort_provider` also accepts a comma-separated provider chain, for example `CoreMLExecutionProvider,CPUExecutionProvider`. ONNX Runtime sessions use full graph optimization, sequential execution, 8 intra-op threads, and 1 inter-op thread. CUDA ONNX Runtime prediction uses I/O binding when the nn-U-Net patch tensor is already on CUDA.
+
 ## 8. Comparing PyTorch vs ONNX Runtime Outputs
 
 Run both backends on the same input and compare final segmentations:

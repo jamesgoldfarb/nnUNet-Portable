@@ -979,7 +979,8 @@ def predict_entry_point():
                         help='Path to a fixed-shape ONNX model. Required when --backend onnxruntime is used.')
     parser.add_argument('--ort_provider', type=str, required=False, default='CPUExecutionProvider',
                         help='ONNX Runtime execution provider for --backend onnxruntime. '
-                             'Default: CPUExecutionProvider')
+                             'Use a comma-separated list for fallback providers, for example '
+                             'CoreMLExecutionProvider,CPUExecutionProvider. Default: CPUExecutionProvider')
 
     print(
         "\n#######################################################################\nPlease cite the following paper "
