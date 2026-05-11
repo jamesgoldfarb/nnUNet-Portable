@@ -160,6 +160,8 @@ If ONNX Runtime reports that a provider is unavailable, list providers with the 
 
 The MVP export uses fixed patch size and no dynamic axes. Confirm that the ONNX model was exported from the same nnU-Net configuration, fold, checkpoint, patch size, and input channel count that prediction uses.
 
+The ONNX model input shape must exactly match the patch tensor shape that `nnUNetv2_predict` sends to the network. Do not rely on spatial-axis transposes to compensate for a mismatch; anisotropic kernels or strides can make that a different computation. Re-export the ONNX model with the exact patch shape used by nnU-Net prediction.
+
 ### ONNX Export Failure
 
 Check the printed network class, input shape, opset, package versions, and full exception. Re-run export with the default CPU device first, then compare against provider-specific behavior later.

@@ -1,4 +1,5 @@
 from pathlib import Path
+from numbers import Integral
 
 import numpy as np
 import torch
@@ -37,8 +38,27 @@ class OnnxRuntimeInferenceBackend:
         self.input_name = input_name
         self.output_name = output_name
         self.session = ort.InferenceSession(str(self.onnx_model_path), providers=[self.provider])
+        self.expected_input_shape = self._get_expected_input_shape()
+
+    def _get_expected_input_shape(self):
+        for session_input in self.session.get_inputs():
+            if session_input.name == self.input_name:
+                shape = []
+                for dim in session_input.shape:
+                    shape.append(int(dim) if isinstance(dim, Integral) else None)
+                return tuple(shape)
+        available_inputs = [session_input.name for session_input in self.session.get_inputs()]
+        raise RuntimeError(f"ONNX input '{self.input_name}' not found. Available inputs: {available_inputs}")
 
     def __call__(self, network, x: torch.Tensor) -> torch.Tensor:
+        if self.expected_input_shape is not None and all(dim is not None for dim in self.expected_input_shape):
+            expected_shape = tuple(self.expected_input_shape)
+            if tuple(x.shape) != expected_shape:
+                raise RuntimeError(
+                    f"ONNX model expects input shape {expected_shape} but nnU-Net provided patch shape "
+                    f"{tuple(x.shape)}. Re-export the ONNX model with the exact patch shape used by nnUNetv2_predict."
+                )
+
         input_array = x.detach().cpu().numpy().astype(np.float32, copy=False)
         output_array = self.session.run([self.output_name], {self.input_name: input_array})[0]
 

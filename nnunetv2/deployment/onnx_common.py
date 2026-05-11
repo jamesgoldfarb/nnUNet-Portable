@@ -22,6 +22,7 @@ def load_fold_all_predictor(
     torch_module: Any,
     predictor_cls: Any,
     determine_num_input_channels_fn: Any,
+    configuration: str = SUPPORTED_CONFIGURATION,
 ):
     predictor = predictor_cls(
         tile_step_size=0.5,
@@ -35,9 +36,9 @@ def load_fold_all_predictor(
     )
     predictor.initialize_from_trained_model_folder(str(model_dir), use_folds=("all",), checkpoint_name=checkpoint)
 
-    expected_configuration = predictor.plans_manager.get_configuration(SUPPORTED_CONFIGURATION).configuration
+    expected_configuration = predictor.plans_manager.get_configuration(configuration).configuration
     if predictor.configuration_manager.configuration != expected_configuration:
-        raise RuntimeError(f"Only {SUPPORTED_CONFIGURATION} is supported.")
+        raise RuntimeError(f"Loaded model does not match requested configuration {configuration}.")
     if predictor.configuration_manager.previous_stage_name is not None:
         raise RuntimeError("Cascaded configurations are not supported.")
 

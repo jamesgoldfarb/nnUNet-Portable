@@ -38,6 +38,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold_all.")
     parser.add_argument("--output_onnx", required=True, help="Output ONNX file path.")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
+    parser.add_argument("--configuration", default=SUPPORTED_CONFIGURATION, help="Expected nnU-Net configuration. Default: 3d_fullres")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version. Default: 17")
     parser.add_argument("--device", default="cpu", help="Torch device for export. Default: cpu")
     return parser.parse_args()
@@ -54,6 +55,7 @@ def _write_export_metadata(
     output_onnx: Path,
     model_dir: Path,
     checkpoint: str,
+    configuration: str,
     patch_size: tuple[int, ...],
     num_input_channels: int,
     opset: int,
@@ -64,8 +66,10 @@ def _write_export_metadata(
         "model_dir": str(model_dir),
         "checkpoint": checkpoint,
         "fold": "all",
-        "configuration": SUPPORTED_CONFIGURATION,
+        "configuration": configuration,
         "patch_size": list(patch_size),
+        "patch_size_order": "nnU-Net network tensor spatial order, matching input tensor shape [N, C, *patch_size]",
+        "input_shape": [1, num_input_channels, *patch_size],
         "num_input_channels": num_input_channels,
         "input_name": INPUT_NAME,
         "output_name": OUTPUT_NAME,
@@ -79,6 +83,21 @@ def _write_export_metadata(
     metadata_path = output_onnx.parent / "model_export.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote export metadata: {metadata_path}")
+
+
+def _get_onnx_input_shape(onnx_module: Any, output_onnx: Path, input_name: str) -> list[int] | None:
+    model = onnx_module.load(str(output_onnx), load_external_data=False)
+    for graph_input in model.graph.input:
+        if graph_input.name != input_name:
+            continue
+        dims = []
+        for dim in graph_input.type.tensor_type.shape.dim:
+            if dim.HasField("dim_value"):
+                dims.append(int(dim.dim_value))
+            else:
+                return None
+        return dims
+    raise RuntimeError(f"ONNX graph input '{input_name}' was not found in {output_onnx}")
 
 
 def main() -> int:
@@ -113,8 +132,11 @@ def main() -> int:
             torch,
             nnUNetPredictor,
             determine_num_input_channels,
+            configuration=args.configuration,
         )
         input_shape = (1, num_input_channels, *patch_size)
+        print(f"nnU-Net patch size used for export: {patch_size}")
+        print(f"ONNX input shape used for export: {input_shape}")
 
         network = predictor.network.to(device)
         network.eval()
@@ -140,7 +162,23 @@ def main() -> int:
 
         print("Running ONNX checker")
         onnx.checker.check_model(str(output_onnx))
-        _write_export_metadata(output_onnx, model_dir, args.checkpoint, patch_size, num_input_channels, args.opset, torch, onnx)
+        exported_input_shape = _get_onnx_input_shape(onnx, output_onnx, INPUT_NAME)
+        if exported_input_shape is not None and exported_input_shape != list(input_shape):
+            raise RuntimeError(
+                f"Exported ONNX input shape {exported_input_shape} does not match dummy input shape {list(input_shape)}. "
+                "Re-export with the same model_dir/configuration used by nnUNetv2_predict."
+            )
+        _write_export_metadata(
+            output_onnx,
+            model_dir,
+            args.checkpoint,
+            args.configuration,
+            patch_size,
+            num_input_channels,
+            args.opset,
+            torch,
+            onnx,
+        )
         print("ONNX export complete")
         return 0
 
