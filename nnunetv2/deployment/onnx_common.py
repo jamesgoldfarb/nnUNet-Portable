@@ -2,7 +2,42 @@ from pathlib import Path
 from typing import Any
 
 
+SUPPORTED_CONFIGURATIONS = ("3d_fullres", "3d_lowres")
 SUPPORTED_CONFIGURATION = "3d_fullres"
+
+
+def normalize_fold(fold: str | int):
+    if isinstance(fold, int):
+        return fold
+    if fold.startswith("fold_"):
+        fold = fold[len("fold_"):]
+    if fold == "all":
+        return fold
+    try:
+        return int(fold)
+    except ValueError as exc:
+        raise RuntimeError("Fold must be 'all', 'fold_all', an integer, or fold_<integer>.") from exc
+
+
+def fold_dir_name(fold: str | int) -> str:
+    normalized_fold = normalize_fold(fold)
+    return f"fold_{normalized_fold}"
+
+
+def fold_arg(fold: str | int) -> str:
+    return str(normalize_fold(fold))
+
+
+def checkpoint_path(model_dir: Path, fold: str | int, checkpoint: str) -> Path:
+    return model_dir / fold_dir_name(fold) / checkpoint
+
+
+def validate_configuration(configuration: str) -> None:
+    if configuration not in SUPPORTED_CONFIGURATIONS:
+        raise RuntimeError(
+            f"Unsupported configuration '{configuration}'. "
+            f"Supported configurations: {', '.join(SUPPORTED_CONFIGURATIONS)}"
+        )
 
 
 def validate_provider(ort_module: Any, provider: str) -> list[str]:
@@ -16,14 +51,17 @@ def validate_provider(ort_module: Any, provider: str) -> list[str]:
     return available_providers
 
 
-def load_fold_all_predictor(
+def load_predictor_for_export(
     model_dir: Path,
     checkpoint: str,
     torch_module: Any,
     predictor_cls: Any,
     determine_num_input_channels_fn: Any,
     configuration: str = SUPPORTED_CONFIGURATION,
+    fold: str = "all",
 ):
+    validate_configuration(configuration)
+    normalized_fold = normalize_fold(fold)
     predictor = predictor_cls(
         tile_step_size=0.5,
         use_gaussian=True,
@@ -34,7 +72,7 @@ def load_fold_all_predictor(
         verbose_preprocessing=False,
         allow_tqdm=False,
     )
-    predictor.initialize_from_trained_model_folder(str(model_dir), use_folds=("all",), checkpoint_name=checkpoint)
+    predictor.initialize_from_trained_model_folder(str(model_dir), use_folds=(normalized_fold,), checkpoint_name=checkpoint)
 
     expected_configuration = predictor.plans_manager.get_configuration(configuration).configuration
     if predictor.configuration_manager.configuration != expected_configuration:
@@ -54,6 +92,25 @@ def load_fold_all_predictor(
         )
     )
     return predictor, patch_size, num_input_channels
+
+
+def load_fold_all_predictor(
+    model_dir: Path,
+    checkpoint: str,
+    torch_module: Any,
+    predictor_cls: Any,
+    determine_num_input_channels_fn: Any,
+    configuration: str = SUPPORTED_CONFIGURATION,
+):
+    return load_predictor_for_export(
+        model_dir,
+        checkpoint,
+        torch_module,
+        predictor_cls,
+        determine_num_input_channels_fn,
+        configuration=configuration,
+        fold="all",
+    )
 
 
 def has_nan_or_inf(array: Any) -> bool:

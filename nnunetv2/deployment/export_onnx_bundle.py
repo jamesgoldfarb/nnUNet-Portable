@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from nnunetv2.deployment.onnx_common import SUPPORTED_CONFIGURATIONS, fold_arg
+
 
 DEFAULT_PROVIDER = "CPUExecutionProvider"
 INPUT_NAME = "input"
@@ -20,7 +22,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--onnx_model", required=True, help="Already-exported ONNX model containing the network forward pass.")
     parser.add_argument("--output_bundle", required=True, help="Output bundle directory.")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
-    parser.add_argument("--configuration", default="3d_fullres", help="nnU-Net configuration. Default: 3d_fullres")
+    parser.add_argument(
+        "--configuration",
+        default="3d_fullres",
+        choices=SUPPORTED_CONFIGURATIONS,
+        help="nnU-Net configuration. Default: 3d_fullres",
+    )
     parser.add_argument("--fold", default="all", help="Fold represented by the ONNX export. Default: all")
     return parser.parse_args()
 
@@ -148,7 +155,7 @@ def create_bundle(model_dir: Path, onnx_model: Path, output_bundle: Path, checkp
 
     plans = json.loads(plans_path.read_text(encoding="utf-8"))
     model_export = _load_json_if_present(model_export_path)
-    inference_config = _bundle_metadata(plans, model_export, configuration, fold, checkpoint)
+    inference_config = _bundle_metadata(plans, model_export, configuration, fold_arg(fold), checkpoint)
 
     shutil.copy2(onnx_model, output_bundle / "model.onnx")
     if model_export_path.is_file():

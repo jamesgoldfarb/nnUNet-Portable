@@ -8,7 +8,13 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Dict
 
-from nnunetv2.deployment.onnx_common import SUPPORTED_CONFIGURATION, load_fold_all_predictor
+from nnunetv2.deployment.onnx_common import (
+    SUPPORTED_CONFIGURATION,
+    SUPPORTED_CONFIGURATIONS,
+    checkpoint_path,
+    fold_arg,
+    load_predictor_for_export,
+)
 
 
 INPUT_NAME = "input"
@@ -33,12 +39,18 @@ def _versions(torch_module: Any = None, onnx_module: Any = None) -> Dict[str, st
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export fold_all/checkpoint_final.pth nnUNetv2 3d_fullres network forward pass to fixed-shape ONNX."
+        description="Export an nnUNetv2 3D network forward pass to fixed-shape ONNX."
     )
-    parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold_all.")
+    parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold folders.")
     parser.add_argument("--output_onnx", required=True, help="Output ONNX file path.")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
-    parser.add_argument("--configuration", default=SUPPORTED_CONFIGURATION, help="Expected nnU-Net configuration. Default: 3d_fullres")
+    parser.add_argument(
+        "--configuration",
+        default=SUPPORTED_CONFIGURATION,
+        choices=SUPPORTED_CONFIGURATIONS,
+        help="Expected nnU-Net configuration. Default: 3d_fullres",
+    )
+    parser.add_argument("--fold", default="all", help="Fold to export: all, 0, 1, etc. Default: all")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version. Default: 17")
     parser.add_argument("--device", default="cpu", help="Torch device for export. Default: cpu")
     parser.add_argument(
@@ -67,6 +79,7 @@ def _write_export_metadata(
     output_onnx: Path,
     model_dir: Path,
     checkpoint: str,
+    fold: str,
     configuration: str,
     patch_size: tuple[int, ...],
     num_input_channels: int,
@@ -80,7 +93,7 @@ def _write_export_metadata(
     metadata = {
         "model_dir": str(model_dir),
         "checkpoint": checkpoint,
-        "fold": "all",
+        "fold": fold,
         "configuration": configuration,
         "patch_size": list(patch_size),
         "patch_size_order": "nnU-Net network tensor spatial order, matching input tensor shape [N, C, *patch_size]",
@@ -122,11 +135,16 @@ def main() -> int:
     args = _parse_args()
     model_dir = Path(args.model_dir).expanduser().resolve()
     output_onnx = Path(args.output_onnx).expanduser().resolve()
-    checkpoint_path = model_dir / "fold_all" / args.checkpoint
+    try:
+        resolved_checkpoint_path = checkpoint_path(model_dir, args.fold, args.checkpoint)
+        normalized_fold_arg = fold_arg(args.fold)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
-    if not checkpoint_path.is_file():
-        print(f"Error: required checkpoint not found: {checkpoint_path}", file=sys.stderr)
-        print(f"Expected fold_all/{args.checkpoint} for this exporter scope.", file=sys.stderr)
+    if not resolved_checkpoint_path.is_file():
+        print(f"Error: required checkpoint not found: {resolved_checkpoint_path}", file=sys.stderr)
+        print(f"Expected {resolved_checkpoint_path.parent.name}/{args.checkpoint}.", file=sys.stderr)
         return 2
 
     torch = None
@@ -147,16 +165,19 @@ def main() -> int:
         _validate_precision(args.fp16, device)
         export_dtype = torch.float16 if args.fp16 else torch.float32
         precision = "fp16" if args.fp16 else "fp32"
-        predictor, patch_size, num_input_channels = load_fold_all_predictor(
+        predictor, patch_size, num_input_channels = load_predictor_for_export(
             model_dir,
             args.checkpoint,
             torch,
             nnUNetPredictor,
             determine_num_input_channels,
             configuration=args.configuration,
+            fold=args.fold,
         )
         input_shape = (1, num_input_channels, *patch_size)
-        print(f"nnU-Net patch size used for export: {patch_size}")
+        print(f"nnU-Net configuration used for export: {args.configuration}")
+        print(f"nnU-Net fold used for export: {normalized_fold_arg}")
+        print(f"nnU-Net patch size from plans.json used for export: {patch_size}")
         print(f"ONNX input shape used for export: {input_shape}")
         print(f"ONNX export precision: {precision}")
 
@@ -191,12 +212,13 @@ def main() -> int:
         if exported_input_shape is not None and exported_input_shape != list(input_shape):
             raise RuntimeError(
                 f"Exported ONNX input shape {exported_input_shape} does not match dummy input shape {list(input_shape)}. "
-                "Re-export with the same model_dir/configuration used by nnUNetv2_predict."
+                "Re-export with the same model_dir/configuration/fold used by nnUNetv2_predict."
             )
         _write_export_metadata(
             output_onnx,
             model_dir,
             args.checkpoint,
+            normalized_fold_arg,
             args.configuration,
             patch_size,
             num_input_channels,

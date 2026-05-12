@@ -2,16 +2,30 @@ import argparse
 import sys
 from pathlib import Path
 
-from nnunetv2.deployment.onnx_common import load_fold_all_predictor, report_comparison, validate_provider
+from nnunetv2.deployment.onnx_common import (
+    SUPPORTED_CONFIGURATION,
+    SUPPORTED_CONFIGURATIONS,
+    checkpoint_path,
+    load_predictor_for_export,
+    report_comparison,
+    validate_provider,
+)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare nnUNetv2 fold_all PyTorch logits against ONNX Runtime logits on a deterministic patch."
+        description="Compare nnUNetv2 PyTorch logits against ONNX Runtime logits on a deterministic patch."
     )
-    parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold_all.")
+    parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold folders.")
     parser.add_argument("--onnx_model", required=True, help="Fixed-shape ONNX model exported from the same nnUNet model.")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
+    parser.add_argument(
+        "--configuration",
+        default=SUPPORTED_CONFIGURATION,
+        choices=SUPPORTED_CONFIGURATIONS,
+        help="Expected nnU-Net configuration. Default: 3d_fullres",
+    )
+    parser.add_argument("--fold", default="all", help="Fold to validate: all, 0, 1, etc. Default: all")
     parser.add_argument("--provider", default="CPUExecutionProvider", help="ONNX Runtime provider. Default: CPUExecutionProvider")
     parser.add_argument("--seed", type=int, default=12345, help="Random seed for deterministic input. Default: 12345")
     return parser.parse_args()
@@ -21,11 +35,15 @@ def main() -> int:
     args = _parse_args()
     model_dir = Path(args.model_dir).expanduser().resolve()
     onnx_model = Path(args.onnx_model).expanduser().resolve()
-    checkpoint_path = model_dir / "fold_all" / args.checkpoint
+    try:
+        resolved_checkpoint_path = checkpoint_path(model_dir, args.fold, args.checkpoint)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
-    if not checkpoint_path.is_file():
-        print(f"Error: required checkpoint not found: {checkpoint_path}", file=sys.stderr)
-        print(f"Expected fold_all/{args.checkpoint} for this validation scope.", file=sys.stderr)
+    if not resolved_checkpoint_path.is_file():
+        print(f"Error: required checkpoint not found: {resolved_checkpoint_path}", file=sys.stderr)
+        print(f"Expected {resolved_checkpoint_path.parent.name}/{args.checkpoint}.", file=sys.stderr)
         return 2
     if not onnx_model.is_file():
         print(f"Error: ONNX model not found: {onnx_model}", file=sys.stderr)
@@ -50,12 +68,14 @@ def main() -> int:
         return 2
 
     try:
-        predictor, patch_size, num_input_channels = load_fold_all_predictor(
+        predictor, patch_size, num_input_channels = load_predictor_for_export(
             model_dir,
             args.checkpoint,
             torch,
             nnUNetPredictor,
             determine_num_input_channels,
+            configuration=args.configuration,
+            fold=args.fold,
         )
         input_shape = (1, num_input_channels, *patch_size)
         rng = np.random.default_rng(args.seed)

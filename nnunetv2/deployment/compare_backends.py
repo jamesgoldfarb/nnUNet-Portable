@@ -8,6 +8,12 @@ from typing import Any
 import numpy as np
 
 from nnunetv2.deployment.compare_segmentations import _load_segmentation, compare_arrays
+from nnunetv2.deployment.onnx_common import (
+    SUPPORTED_CONFIGURATIONS,
+    checkpoint_path,
+    normalize_fold,
+    validate_configuration,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -17,16 +23,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="Input image folder in nnU-Net prediction format.")
     parser.add_argument("--output", required=True, help="Output folder. Subfolders pytorch and onnxruntime are created.")
     parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold folders.")
-    parser.add_argument("--configuration", default="3d_fullres", help="Expected nnU-Net configuration. Default: 3d_fullres")
+    parser.add_argument(
+        "--configuration",
+        default="3d_fullres",
+        choices=SUPPORTED_CONFIGURATIONS,
+        help="Expected nnU-Net configuration. Default: 3d_fullres",
+    )
     parser.add_argument("--fold", default="all", help="Fold to run. Default: all")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
     parser.add_argument("--onnx_model", required=True, help="Fixed-shape ONNX model for ONNX Runtime backend.")
     parser.add_argument("--ort_provider", default="CPUExecutionProvider", help="ONNX Runtime provider. Default: CPUExecutionProvider")
     return parser.parse_args()
-
-
-def _normalize_fold(fold: str):
-    return fold if fold == "all" else int(fold)
 
 
 def _make_predictor(torch_module: Any, predictor_cls: Any, device: Any):
@@ -145,8 +152,13 @@ def main() -> int:
     if not input_dir.is_dir():
         print(f"Error: input folder does not exist: {input_dir}", file=sys.stderr)
         return 2
-    if not (model_dir / f"fold_{args.fold}" / args.checkpoint).is_file():
-        print(f"Error: checkpoint not found: {model_dir / f'fold_{args.fold}' / args.checkpoint}", file=sys.stderr)
+    try:
+        resolved_checkpoint_path = checkpoint_path(model_dir, args.fold, args.checkpoint)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if not resolved_checkpoint_path.is_file():
+        print(f"Error: checkpoint not found: {resolved_checkpoint_path}", file=sys.stderr)
         return 2
     if not onnx_model.is_file():
         print(f"Error: ONNX model does not exist: {onnx_model}", file=sys.stderr)
@@ -162,8 +174,9 @@ def main() -> int:
         return 2
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    fold = _normalize_fold(args.fold)
+    fold = normalize_fold(args.fold)
     try:
+        validate_configuration(args.configuration)
         pytorch_predictor, pytorch_runtime = _run_prediction(
             nnUNetPredictor, torch, model_dir, fold, args.checkpoint, input_dir, pytorch_dir, device
         )

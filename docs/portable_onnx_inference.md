@@ -11,8 +11,8 @@ Users must validate the ONNX Runtime backend for their own model, data, hardware
 ## 2. Supported MVP Scope
 
 - nnUNetv2 only
-- `3d_fullres` only
-- `fold_all/checkpoint_final.pth`
+- `3d_fullres` and `3d_lowres`
+- `fold_all/checkpoint_final.pth` and single fold checkpoints such as `fold_0/checkpoint_final.pth`
 - Fixed patch size only
 - Raw logits ONNX export only
 
@@ -28,18 +28,20 @@ Users must validate the ONNX Runtime backend for their own model, data, hardware
 
 ## 4. Exporting ONNX
 
-Export the trained `fold_all` network forward pass to a fixed-shape ONNX model:
+Export a trained fold network forward pass to a fixed-shape ONNX model:
 
 ```bash
 nnUNetv2_export_onnx \
   --model_dir /path/to/nnUNet_results/DatasetXXX/nnUNetTrainer__nnUNetPlans__3d_fullres \
   --output_onnx /path/to/export/model.onnx \
   --checkpoint checkpoint_final.pth \
+  --configuration 3d_fullres \
+  --fold all \
   --opset 17 \
   --device cpu
 ```
 
-The export writes raw logits only. It also writes `model_export.json` next to `model.onnx` when the export succeeds.
+The export writes raw logits only. It also writes `model_export.json` next to `model.onnx` when the export succeeds. The ONNX model remains fixed-shape, but the patch shape is read from the nnU-Net plans for the requested configuration (`--configuration 3d_fullres` or `--configuration 3d_lowres`) rather than being hardcoded.
 
 To export an fp16 ONNX model, use CUDA for the export pass:
 
@@ -48,6 +50,8 @@ nnUNetv2_export_onnx \
   --model_dir /path/to/nnUNet_results/DatasetXXX/nnUNetTrainer__nnUNetPlans__3d_fullres \
   --output_onnx /path/to/export/model_fp16.onnx \
   --checkpoint checkpoint_final.pth \
+  --configuration 3d_fullres \
+  --fold all \
   --opset 17 \
   --device cuda \
   --fp16
@@ -64,6 +68,8 @@ nnUNetv2_validate_onnx_random_patch \
   --model_dir /path/to/nnUNet_results/DatasetXXX/nnUNetTrainer__nnUNetPlans__3d_fullres \
   --onnx_model /path/to/export/model.onnx \
   --checkpoint checkpoint_final.pth \
+  --configuration 3d_fullres \
+  --fold all \
   --provider CPUExecutionProvider \
   --seed 12345
 ```
@@ -80,6 +86,8 @@ nnUNetv2_validate_onnx_preprocessed_patch \
   --onnx_model /path/to/export/model.onnx \
   --preprocessed_patch /path/to/preprocessed_patch.npy \
   --checkpoint checkpoint_final.pth \
+  --configuration 3d_fullres \
+  --fold all \
   --provider CPUExecutionProvider
 ```
 

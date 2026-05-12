@@ -14,6 +14,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from nnunetv2.deployment.onnx_common import (
+    SUPPORTED_CONFIGURATIONS,
+    checkpoint_path,
+    normalize_fold,
+    validate_configuration,
+)
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -24,12 +31,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model_dir", required=True, help="Trained nnUNetv2 model directory containing fold folders.")
     parser.add_argument("--checkpoint", default="checkpoint_final.pth", help="Checkpoint filename. Default: checkpoint_final.pth")
     parser.add_argument("--fold", default="all", help="Fold to benchmark. Default: all")
-    parser.add_argument("--configuration", default="3d_fullres", help="Expected nnU-Net configuration. Default: 3d_fullres")
+    parser.add_argument(
+        "--configuration",
+        default="3d_fullres",
+        choices=SUPPORTED_CONFIGURATIONS,
+        help="Expected nnU-Net configuration. Default: 3d_fullres",
+    )
     return parser.parse_args()
 
 
 def _normalize_fold(fold: str):
-    return fold if fold == "all" else int(fold)
+    return normalize_fold(fold)
 
 
 def _case_ids(input_folder: Path, file_ending: str, create_lists_from_splitted_dataset_folder_fn: Any) -> list[str]:
@@ -191,9 +203,13 @@ def main() -> int:
         print(f"Full exception: {exc}", file=sys.stderr)
         return 2
 
-    checkpoint_path = model_dir / f"fold_{args.fold}" / args.checkpoint
-    if not checkpoint_path.is_file():
-        print(f"Error: required checkpoint not found: {checkpoint_path}", file=sys.stderr)
+    try:
+        resolved_checkpoint_path = checkpoint_path(model_dir, args.fold, args.checkpoint)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if not resolved_checkpoint_path.is_file():
+        print(f"Error: required checkpoint not found: {resolved_checkpoint_path}", file=sys.stderr)
         return 2
 
     predictor_params = inspect.signature(nnUNetPredictor).parameters
@@ -212,6 +228,12 @@ def main() -> int:
     baseline_perform_on_device = bool(device.type == "cuda")
     if not knob_accessibility["perform_everything_on_device"]:
         baseline_perform_on_device = False
+
+    try:
+        validate_configuration(args.configuration)
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     initial_predictor = _make_predictor(
         nnUNetPredictor,
