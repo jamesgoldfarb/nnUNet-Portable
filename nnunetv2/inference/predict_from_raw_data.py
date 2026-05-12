@@ -6,7 +6,7 @@ import os
 from copy import deepcopy
 from queue import Queue
 from threading import Thread
-from time import sleep
+from time import sleep, perf_counter
 from typing import Tuple, Union, List, Optional
 
 import numpy as np
@@ -634,6 +634,7 @@ class nnUNetPredictor(object):
             if not self.allow_tqdm and self.verbose:
                 print(f'running prediction: {len(slicers)} steps')
 
+            stage_start = perf_counter()
             with tqdm(desc=None, total=len(slicers), disable=not self.allow_tqdm) as pbar:
                 while True:
                     item = queue.get()
@@ -653,6 +654,11 @@ class nnUNetPredictor(object):
 
             # predicted_logits /= n_predictions
             torch.div(predicted_logits, n_predictions, out=predicted_logits)
+            print(
+                f"[nnU-Net timing] sliding-window inference and stitch/aggregate predictions: "
+                f"{perf_counter() - stage_start:.3f} s",
+                flush=True,
+            )
             # check for infs
             if torch.any(torch.isinf(predicted_logits)):
                 raise RuntimeError('Encountered inf in predicted array. Aborting... If this problem persists, '

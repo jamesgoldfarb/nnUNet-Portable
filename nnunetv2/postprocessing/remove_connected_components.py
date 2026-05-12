@@ -1,6 +1,7 @@
 import argparse
 import multiprocessing
 import shutil
+from time import perf_counter
 from typing import Union, Tuple, List, Callable
 
 import numpy as np
@@ -16,6 +17,10 @@ from nnunetv2.paths import nnUNet_raw
 from nnunetv2.utilities.file_path_utilities import folds_tuple_to_string
 from nnunetv2.utilities.json_export import recursive_fix_for_json_export
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
+
+
+def _print_timing(prefix: str, stage: str, start_time: float) -> None:
+    print(f"[nnU-Net timing] {prefix}: {stage}: {perf_counter() - start_time:.3f} s", flush=True)
 
 
 def remove_all_but_largest_component_from_segmentation(segmentation: np.ndarray,
@@ -44,9 +49,18 @@ def load_postprocess_save(segmentation_file: str,
                           image_reader_writer: BaseReaderWriter,
                           pp_fns: List[Callable],
                           pp_fn_kwargs: List[dict]):
+    timing_prefix = f"postprocessing {segmentation_file}"
+    total_start = perf_counter()
+    stage_start = perf_counter()
     seg, props = image_reader_writer.read_seg(segmentation_file)
+    _print_timing(timing_prefix, "read segmentation file from disk", stage_start)
+    stage_start = perf_counter()
     seg = apply_postprocessing(seg[0], pp_fns, pp_fn_kwargs)
+    _print_timing(timing_prefix, "apply postprocessing", stage_start)
+    stage_start = perf_counter()
     image_reader_writer.write_seg(seg, output_fname, props)
+    _print_timing(timing_prefix, "write segmentation files to disk", stage_start)
+    _print_timing(timing_prefix, "total postprocessing", total_start)
 
 
 def determine_postprocessing(folder_predictions: str,

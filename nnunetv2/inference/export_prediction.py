@@ -1,4 +1,5 @@
 from typing import Union, List
+from time import perf_counter
 
 import numpy as np
 import torch
@@ -11,13 +12,18 @@ from nnunetv2.utilities.label_handling.label_handling import LabelManager
 from nnunetv2.utilities.plans_handling.plans_handler import PlansManager, ConfigurationManager
 
 
+def _print_timing(prefix: str, stage: str, start_time: float) -> None:
+    print(f"[nnU-Net timing] {prefix}: {stage}: {perf_counter() - start_time:.3f} s", flush=True)
+
+
 def convert_predicted_logits_to_segmentation_with_correct_shape(predicted_logits: Union[torch.Tensor, np.ndarray],
                                                                 plans_manager: PlansManager,
                                                                 configuration_manager: ConfigurationManager,
                                                                 label_manager: LabelManager,
                                                                 properties_dict: dict,
                                                                 return_probabilities: bool = False,
-                                                                num_threads_torch: int = default_num_processes):
+                                                                num_threads_torch: int = default_num_processes,
+                                                                timing_prefix: str = "prediction export"):
     old_threads = torch.get_num_threads()
     torch.set_num_threads(num_threads_torch)
 
@@ -27,21 +33,27 @@ def convert_predicted_logits_to_segmentation_with_correct_shape(predicted_logits
         len(configuration_manager.spacing) == \
         len(properties_dict['shape_after_cropping_and_before_resampling']) else \
         [spacing_transposed[0], *configuration_manager.spacing]
-    predicted_logits = configuration_manager.resampling_fn_probabilities(predicted_logits,
-                                            properties_dict['shape_after_cropping_and_before_resampling'],
-                                            current_spacing,
-                                            [properties_dict['spacing'][i] for i in plans_manager.transpose_forward])
+    stage_start = perf_counter()
+    predicted_logits = configuration_manager.resampling_fn_probabilities(
+        predicted_logits,
+        properties_dict['shape_after_cropping_and_before_resampling'],
+        current_spacing,
+        [properties_dict['spacing'][i] for i in plans_manager.transpose_forward])
+    _print_timing(timing_prefix, "resample prediction back to original image space", stage_start)
     # return value of resampling_fn_probabilities can be ndarray or Tensor but that does not matter because
     # apply_inference_nonlin will convert to torch
+    stage_start = perf_counter()
     if not return_probabilities:
         # this has a faster computation path because we can skip the softmax in regular (not region based) training
         segmentation = label_manager.convert_logits_to_segmentation(predicted_logits)
     else:
         predicted_probabilities = label_manager.apply_inference_nonlin(predicted_logits)
         segmentation = label_manager.convert_probabilities_to_segmentation(predicted_probabilities)
+    _print_timing(timing_prefix, "convert logits to labels", stage_start)
     del predicted_logits
 
     # put segmentation in bbox (revert cropping)
+    stage_start = perf_counter()
     segmentation_reverted_cropping = np.zeros(properties_dict['shape_before_cropping'],
                                               dtype=np.uint8 if len(label_manager.foreground_labels) < 255 else np.uint16)
     segmentation_reverted_cropping = insert_crop_into_image(segmentation_reverted_cropping, segmentation, properties_dict['bbox_used_for_cropping'])
@@ -53,8 +65,10 @@ def convert_predicted_logits_to_segmentation_with_correct_shape(predicted_logits
 
     # revert transpose
     segmentation_reverted_cropping = segmentation_reverted_cropping.transpose(plans_manager.transpose_backward)
+    _print_timing(timing_prefix, "revert cropping and transpose", stage_start)
     if return_probabilities:
         # revert cropping
+        stage_start = perf_counter()
         predicted_probabilities = label_manager.revert_cropping_on_probabilities(predicted_probabilities,
                                                                                  properties_dict[
                                                                                      'bbox_used_for_cropping'],
@@ -64,6 +78,7 @@ def convert_predicted_logits_to_segmentation_with_correct_shape(predicted_logits
         # revert transpose
         predicted_probabilities = predicted_probabilities.transpose([0] + [i + 1 for i in
                                                                            plans_manager.transpose_backward])
+        _print_timing(timing_prefix, "revert probability cropping and transpose", stage_start)
         torch.set_num_threads(old_threads)
         return segmentation_reverted_cropping, predicted_probabilities
     else:
@@ -88,26 +103,33 @@ def export_prediction_from_logits(predicted_array_or_file: Union[np.ndarray, tor
     if isinstance(dataset_json_dict_or_file, str):
         dataset_json_dict_or_file = load_json(dataset_json_dict_or_file)
 
+    timing_prefix = f"export {output_file_truncated}"
+    total_start = perf_counter()
     label_manager = plans_manager.get_label_manager(dataset_json_dict_or_file)
     ret = convert_predicted_logits_to_segmentation_with_correct_shape(
         predicted_array_or_file, plans_manager, configuration_manager, label_manager, properties_dict,
-        return_probabilities=save_probabilities, num_threads_torch=num_threads_torch
+        return_probabilities=save_probabilities, num_threads_torch=num_threads_torch, timing_prefix=timing_prefix
     )
     del predicted_array_or_file
 
     # save
     if save_probabilities:
         segmentation_final, probabilities_final = ret
+        stage_start = perf_counter()
         np.savez_compressed(output_file_truncated + '.npz', probabilities=probabilities_final)
         save_pickle(properties_dict, output_file_truncated + '.pkl')
+        _print_timing(timing_prefix, "write probability files to disk", stage_start)
         del probabilities_final, ret
     else:
         segmentation_final = ret
         del ret
 
     rw = plans_manager.image_reader_writer_class()
+    stage_start = perf_counter()
     rw.write_seg(segmentation_final, output_file_truncated + dataset_json_dict_or_file['file_ending'],
                  properties_dict)
+    _print_timing(timing_prefix, "write segmentation files to disk", stage_start)
+    _print_timing(timing_prefix, "total export", total_start)
 
 
 def resample_and_save(predicted: Union[torch.Tensor, np.ndarray], target_shape: List[int], output_file: str,
@@ -116,6 +138,8 @@ def resample_and_save(predicted: Union[torch.Tensor, np.ndarray], target_shape: 
                       dataset_class=None) \
         -> None:
 
+    timing_prefix = f"resample_and_save {output_file}"
+    total_start = perf_counter()
     old_threads = torch.get_num_threads()
     torch.set_num_threads(num_threads_torch)
 
@@ -130,18 +154,23 @@ def resample_and_save(predicted: Union[torch.Tensor, np.ndarray], target_shape: 
     target_spacing = configuration_manager.spacing if len(configuration_manager.spacing) == \
         len(properties_dict['shape_after_cropping_and_before_resampling']) else \
         [spacing_transposed[0], *configuration_manager.spacing]
+    stage_start = perf_counter()
     predicted_array_or_file = configuration_manager.resampling_fn_probabilities(predicted,
                                                                                 target_shape,
                                                                                 current_spacing,
                                                                                 target_spacing)
+    _print_timing(timing_prefix, "resample prediction back to target image space", stage_start)
 
     # create segmentation (argmax, regions, etc)
     label_manager = plans_manager.get_label_manager(dataset_json_dict_or_file)
+    stage_start = perf_counter()
     segmentation = label_manager.convert_logits_to_segmentation(predicted_array_or_file)
+    _print_timing(timing_prefix, "convert logits to labels", stage_start)
     # segmentation may be torch.Tensor but we continue with numpy
     if isinstance(segmentation, torch.Tensor):
         segmentation = segmentation.cpu().numpy()
 
+    stage_start = perf_counter()
     if dataset_class is None or dataset_class == nnUNetDatasetBlosc2:
         block_size, chunk_size = nnUNetDatasetBlosc2.comp_blosc2_params(
             (1, *segmentation.shape),
@@ -157,4 +186,6 @@ def resample_and_save(predicted: Union[torch.Tensor, np.ndarray], target_shape: 
             blocks_seg=block_size)
     else:
         dataset_class.save_seg(segmentation.astype(dtype=np.uint8 if len(label_manager.foreground_labels) < 255 else np.uint16), output_file)
+    _print_timing(timing_prefix, "write segmentation files to disk", stage_start)
+    _print_timing(timing_prefix, "total export", total_start)
     torch.set_num_threads(old_threads)
