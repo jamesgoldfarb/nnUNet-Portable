@@ -1,5 +1,6 @@
 from pathlib import Path
 from numbers import Integral
+from time import perf_counter
 from typing import Sequence
 
 import numpy as np
@@ -65,6 +66,15 @@ class OnnxRuntimeInferenceBackend:
         self.expected_output_shape = self._get_expected_output_shape()
         self.expected_output_dtype = self._get_expected_output_dtype()
         self.expected_output_torch_dtype = self._get_expected_output_torch_dtype()
+        self.forward_call_count = 0
+        self.forward_total_seconds = 0.0
+        print(
+            f"[nnU-Net timing] initialized ONNX Runtime backend: model={self.onnx_model_path}, "
+            f"providers={self.providers}, input_shape={self.expected_input_shape}, "
+            f"input_dtype={self.expected_input_torch_dtype}, output_shape={self.expected_output_shape}, "
+            f"output_dtype={self.expected_output_torch_dtype}",
+            flush=True,
+        )
 
     @staticmethod
     def _normalize_providers(provider: str | Sequence[str]) -> list[str]:
@@ -155,14 +165,29 @@ class OnnxRuntimeInferenceBackend:
                     f"{tuple(x.shape)}. Re-export the ONNX model with the exact patch shape used by nnUNetv2_predict."
                 )
 
+        start_time = perf_counter()
         if self._use_cuda_iobinding(x):
-            return self._call_cuda_iobinding(x)
+            output = self._call_cuda_iobinding(x)
+            self._record_forward_timing(start_time, "onnxruntime CUDA I/O binding")
+            return output
 
         input_array = x.detach().cpu().numpy().astype(self.expected_input_dtype, copy=False)
         output_array = self.session.run([self.output_name], {self.input_name: input_array})[0]
 
         self._validate_output_shape(tuple(output_array.shape), x)
-        return torch.as_tensor(output_array, device=x.device, dtype=x.dtype)
+        output = torch.as_tensor(output_array, device=x.device, dtype=x.dtype)
+        self._record_forward_timing(start_time, "onnxruntime standard run")
+        return output
+
+    def _record_forward_timing(self, start_time: float, backend_path: str) -> None:
+        elapsed = perf_counter() - start_time
+        self.forward_call_count += 1
+        self.forward_total_seconds += elapsed
+        print(
+            f"[nnU-Net timing] {backend_path} patch forward #{self.forward_call_count}: "
+            f"{elapsed:.3f} s, cumulative {self.forward_total_seconds:.3f} s",
+            flush=True,
+        )
 
     def _use_cuda_iobinding(self, x: torch.Tensor) -> bool:
         return self.provider == "CUDAExecutionProvider" and x.is_cuda

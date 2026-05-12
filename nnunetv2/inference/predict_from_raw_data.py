@@ -1046,6 +1046,11 @@ def predict_entry_point():
             )
             inference_backend.validate_expected_input_shape(expected_input_shape)
             predictor.inference_backend = inference_backend
+            print(
+                f"[nnU-Net timing] nnUNetv2_predict using ONNX Runtime backend for patch forward pass: "
+                f"model={args.onnx_model}, provider={args.ort_provider}",
+                flush=True,
+            )
         except (FileNotFoundError, RuntimeError) as e:
             parser.error(str(e))
 
